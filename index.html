@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<!--
+  ВЕЛАТРЭК — гатова для пераносу ў Android Studio (WebView-абгортка)
+  =====================================================================
+  Гл. файл ANDROID_GUIDE.md для поўнай інструкцыі і гатовага кода
+  MainActivity.kt + AndroidManifest.xml.
+
+  Кароткая выцяжка таго, што трэба ведаць пры пераносе:
+  1. Гэты файл трэба пакласці ў app/src/main/assets/index.html
+  2. WebView павінен мець: JavaScript enabled, DOM Storage enabled
+     (для localStorage — статыстыка захоўваецца праз яго),
+     Geolocation enabled.
+  3. AndroidManifest.xml патрабуе дазволы:
+     ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, INTERNET
+  4. WebChromeClient павінен апрацоўваць onGeolocationPermissionsShowPrompt
+     і выклікаць яго толькі пасля таго, як атрыманы runtime-дазвол
+     ад карыстальніка (ActivityCompat.requestPermissions).
+  5. Тайлы карты (CartoDB Voyager, Esri) загружаюцца праз інтэрнэт —
+     дадатку заўсёды патрэбнае злучэнне для паказу карты.
+-->
+<html lang="be">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ВелаТрэк</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --bg: #12161A;
+    --panel: #1B2127;
+    --panel-2: #232A31;
+    --lime: #C6F135;
+    --lime-dim: #8FA82A;
+    --blue: #4A90D9;
+    --text: #EEF2F4;
+    --sub: #7C8A94;
+    --danger: #E85C4A;
+    --line: #2C333A;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin:0; padding:0; height:100%; width:100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Roboto, -apple-system, sans-serif;
+    overflow:hidden;
+  }
+  #map {
+    position:absolute; inset:0;
+    filter: saturate(0.8) brightness(0.78) contrast(1.02);
+  }
+  #map.sat{ filter: saturate(0.85) brightness(0.8) contrast(1.05); }
+  .veil {
+    position:absolute; inset:0;
+    background: linear-gradient(180deg, rgba(18,22,26,0.75) 0%, rgba(18,22,26,0.05) 22%, rgba(18,22,26,0.05) 60%, rgba(18,22,26,0.92) 100%);
+    pointer-events:none;
+    z-index: 400;
+  }
+  .topbar{
+    position:absolute; top:0; left:0; right:0;
+    z-index:500;
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 18px 16px 0 20px;
+  }
+  .brand{
+    display:flex; align-items:baseline; gap:8px;
+  }
+  .brand-mark{
+    width:10px; height:10px; border-radius:2px;
+    background: var(--lime);
+    transform: rotate(45deg);
+    flex-shrink:0;
+  }
+  .brand-name{
+    font-size:14px; letter-spacing:0.14em; text-transform:uppercase;
+    color: var(--sub); font-weight:600;
+  }
+  .top-right{
+    display:flex; align-items:center; gap:8px;
+  }
+  .gps-pill{
+    display:flex; align-items:center; gap:6px;
+    font-size:12px; color: var(--sub);
+    background: rgba(27,33,39,0.7);
+    border: 1px solid var(--line);
+    padding: 6px 10px; border-radius: 20px;
+    backdrop-filter: blur(6px);
+    white-space:nowrap;
+  }
+  .gps-dot{
+    width:7px; height:7px; border-radius:50%;
+    background: var(--danger);
+    transition: background 0.3s;
+    flex-shrink:0;
+  }
+  .gps-dot.ok{ background: var(--lime); box-shadow: 0 0 8px var(--lime); }
+
+  .icon-btn{
+    width:36px; height:36px; border-radius:50%;
+    background: rgba(27,33,39,0.7);
+    border: 1px solid var(--line);
+    color: var(--text);
+    display:flex; align-items:center; justify-content:center;
+    font-size:15px; font-weight:700;
+    backdrop-filter: blur(6px);
+    cursor:pointer;
+    flex-shrink:0;
+  }
+
+  .icon-col{
+    position:absolute; right:16px; top:66px; z-index:500;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .icon-col .icon-btn{
+    width:44px; height:44px;
+    background: var(--panel);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  }
+
+  /* Popover panels */
+  .panel{
+    position:absolute; z-index:600;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    opacity:0; pointer-events:none;
+    transform: translateY(-6px);
+    transition: opacity 0.18s, transform 0.18s;
+  }
+  .panel.show{ opacity:1; pointer-events:auto; transform: translateY(0); }
+
+  .theme-panel{
+    top:66px; right:70px;
+    padding:8px;
+    min-width:170px;
+  }
+  .theme-opt{
+    display:flex; align-items:center; gap:10px;
+    padding:10px 10px; border-radius:10px;
+    font-size:13px; color: var(--text);
+    cursor:pointer;
+  }
+  .theme-opt.active{ background: var(--panel-2); color: var(--lime); }
+  .theme-opt .swatch{
+    width:22px; height:22px; border-radius:6px; flex-shrink:0;
+    border:1px solid var(--line);
+  }
+  .sw-scheme{ background: linear-gradient(135deg,#3a4249,#5c6670); }
+  .sw-sat{ background: linear-gradient(135deg,#2a3520,#4b5a30); }
+  .sw-hybrid{ background: linear-gradient(135deg,#20242a,#3a4a2f); }
+
+  /* History bottom sheet */
+  .sheet-overlay{
+    position:absolute; inset:0; z-index:700;
+    background: rgba(0,0,0,0.5);
+    opacity:0; pointer-events:none;
+    transition: opacity 0.2s;
+  }
+  .sheet-overlay.show{ opacity:1; pointer-events:auto; }
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; z-index:701;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    border-radius: 20px 20px 0 0;
+    max-height: 72%;
+    transform: translateY(100%);
+    transition: transform 0.25s ease;
+    display:flex; flex-direction:column;
+  }
+  .sheet.show{ transform: translateY(0); }
+  .sheet-handle{
+    width:36px; height:4px; border-radius:2px;
+    background: var(--line);
+    margin: 10px auto 4px auto;
+  }
+  .sheet-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 6px 18px 12px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .sheet-title{ font-size:16px; font-weight:700; }
+  .sheet-close{
+    background:none; border:none; color:var(--sub);
+    font-size:18px; cursor:pointer; padding:4px;
+  }
+  .sheet-body{
+    overflow-y:auto;
+    padding: 8px 18px 20px 18px;
+  }
+  .hist-empty{
+    color: var(--sub); font-size:13px; text-align:center; padding: 30px 10px;
+  }
+  .hist-item{
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .hist-item:last-child{ border-bottom:none; }
+  .hist-date{
+    font-size:12px; color: var(--sub); margin-bottom:4px;
+  }
+  .hist-dist{
+    font-size:18px; font-weight:700; color: var(--lime);
+  }
+  .hist-meta{
+    text-align:right; font-size:12px; color: var(--sub);
+    line-height:1.5;
+  }
+
+  .hud{
+    position:absolute; left:0; right:0; bottom:0;
+    z-index:500;
+    padding: 0 16px 18px 16px;
+  }
+  .hud-card{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 18px 18px 14px 18px;
+    box-shadow: 0 -12px 40px rgba(0,0,0,0.45);
+  }
+  .speed-row{
+    display:flex; align-items:flex-end; justify-content:center;
+    gap:10px;
+    padding: 4px 0 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .speed-big{
+    font-size: 84px;
+    line-height: 0.85;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--lime);
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 24px rgba(198,241,53,0.25);
+  }
+  .speed-unit{
+    font-size: 16px;
+    color: var(--sub);
+    font-weight:600;
+    padding-bottom: 12px;
+  }
+  .stat-grid{
+    display:grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    padding-top: 14px;
+  }
+  .stat{
+    text-align:center;
+    border-right: 1px solid var(--line);
+  }
+  .stat:last-child{ border-right:none; }
+  .stat-label{
+    font-size:10px; letter-spacing:0.12em; text-transform:uppercase;
+    color: var(--sub); font-weight:600; margin-bottom:4px;
+  }
+  .stat-value{
+    font-size:21px; font-weight:700; font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .stat-value.blue{ color: var(--blue); }
+
+  .controls{
+    display:flex; gap:10px;
+    margin-top:16px;
+  }
+  .btn{
+    flex:1;
+    border:none; border-radius: 14px;
+    padding: 15px 0;
+    font-size: 15px; font-weight:700;
+    letter-spacing:0.02em;
+    cursor:pointer;
+    transition: transform 0.08s ease, opacity 0.2s;
+  }
+  .btn:active{ transform: scale(0.96); }
+  .btn-start{ background: var(--lime); color: #14181C; }
+  .btn-pause{ background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  .btn-stop{ background: var(--danger); color: #fff; }
+  .btn[disabled]{ opacity:0.35; pointer-events:none; }
+
+  .toast{
+    position:absolute; z-index:650; top:70px; left:50%;
+    transform: translateX(-50%) translateY(-10px);
+    background: var(--panel-2); border:1px solid var(--line);
+    color: var(--text); font-size:13px;
+    padding: 10px 16px; border-radius: 12px;
+    opacity:0; pointer-events:none;
+    transition: opacity 0.25s, transform 0.25s;
+    white-space:nowrap;
+  }
+  .toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
+
+  .period-row{
+    display:flex; gap:8px; overflow-x:auto; padding: 4px 0 16px 0;
+    scrollbar-width:none;
+  }
+  .period-row::-webkit-scrollbar{ display:none; }
+  .period-chip{
+    flex-shrink:0;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--sub); font-size:13px; font-weight:600;
+    padding: 9px 14px; border-radius: 20px;
+    cursor:pointer; white-space:nowrap;
+  }
+  .period-chip.active{
+    background: var(--lime); color: #14181C; border-color: var(--lime);
+  }
+  .custom-range{
+    display:none;
+    align-items:flex-end; gap:10px;
+    padding-bottom: 18px;
+  }
+  .custom-range.show{ display:flex; }
+  .date-field{
+    flex:1; display:flex; flex-direction:column; gap:4px;
+  }
+  .date-field label{
+    font-size:11px; color: var(--sub); text-transform:uppercase; letter-spacing:0.08em;
+  }
+  .date-field input{
+    background: var(--panel-2); border:1px solid var(--line); border-radius:10px;
+    color: var(--text); font-size:13px; padding:9px 8px;
+    color-scheme: dark;
+  }
+  .apply-btn{
+    background: var(--lime); border:none; border-radius:10px;
+    color:#14181C; font-weight:700; font-size:13px;
+    padding: 10px 16px; cursor:pointer;
+  }
+  .stats-hero{
+    display:flex; align-items:flex-end; justify-content:center; gap:8px;
+    padding: 8px 0 2px 0;
+  }
+  .stats-hero-value{
+    font-size:56px; font-weight:800; line-height:0.9;
+    color: var(--lime); font-variant-numeric: tabular-nums;
+  }
+  .stats-hero-unit{
+    font-size:15px; color: var(--sub); font-weight:600; padding-bottom:8px;
+  }
+  .stats-sub{
+    text-align:center; font-size:12px; color: var(--sub);
+    margin-bottom: 16px;
+  }
+  .stats-grid-3{
+    border-top: 1px solid var(--line);
+    padding-top: 16px; padding-bottom: 6px;
+  }
+
+  .leaflet-control-attribution{
+    background: rgba(18,22,26,0.55) !important;
+    color: rgba(238,242,244,0.35) !important;
+    font-size: 9px !important;
+    padding: 1px 5px !important;
+  }
+  .leaflet-control-attribution a{ color: rgba(238,242,244,0.45) !important; }
+
+  .permission-overlay{
+    position:absolute; inset:0; z-index:900;
+    background: var(--bg);
+    display:flex; align-items:center; justify-content:center;
+    padding: 24px;
+  }
+  .permission-overlay.hidden{ display:none; }
+  .permission-card{
+    max-width:340px;
+    text-align:center;
+  }
+  .permission-icon{
+    width:64px; height:64px; border-radius:50%;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+    font-size:28px;
+    margin: 0 auto 20px auto;
+  }
+  .permission-title{
+    font-size:19px; font-weight:700; margin-bottom:10px;
+  }
+  .permission-text{
+    font-size:14px; color: var(--sub); line-height:1.5; margin-bottom:26px;
+  }
+  .permission-btn{
+    width:100%; border:none; border-radius:14px;
+    background: var(--lime); color:#14181C;
+    font-size:15px; font-weight:700;
+    padding:15px 0; cursor:pointer;
+  }
+  .permission-denied{
+    font-size:12px; color: var(--danger); margin-top:14px; display:none;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div class="veil"></div>
+
+<div class="permission-overlay" id="permOverlay">
+  <div class="permission-card">
+    <div class="permission-icon">📍</div>
+    <div class="permission-title" data-i18n="perm_title">Патрэбны доступ да GPS</div>
+    <div class="permission-text" data-i18n="perm_text">Каб паказваць маршрут на карце і лічыць дыстанцыю і хуткасць, дадатку трэба ведаць вашу геапазіцыю.</div>
+    <button class="permission-btn" id="permBtn">Дазволіць доступ</button>
+    <div class="permission-denied" id="permDenied">Доступ адхілены. Дазвольце геалакацыю ў наладах браўзера і абновіце старонку.</div>
+  </div>
+</div>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-name">ВелаТрэк</div>
+  </div>
+  <div class="top-right">
+    <div class="gps-pill">
+      <div class="gps-dot" id="gpsDot"></div>
+      <span id="gpsLabel">пошук GPS…</span>
+    </div>
+  </div>
+</div>
+
+<div class="icon-col">
+  <button class="icon-btn" id="langBtn" title="Мова">BE</button>
+  <button class="icon-btn" id="layersBtn" title="Тэма карты">⬢</button>
+  <button class="icon-btn" id="statsBtn" title="Статыстыка">📊</button>
+  <button class="icon-btn" id="historyBtn" title="Гісторыя">🕐</button>
+  <button class="icon-btn" id="locateBtn" title="Мая пазіцыя">◎</button>
+</div>
+
+<div class="panel theme-panel" id="themePanel">
+  <div class="theme-opt active" data-theme="scheme">
+    <div class="swatch sw-scheme"></div>
+    <span data-i18n="theme_scheme">Схема</span>
+  </div>
+  <div class="theme-opt" data-theme="sat">
+    <div class="swatch sw-sat"></div>
+    <span data-i18n="theme_sat">Спадарожнік</span>
+  </div>
+  <div class="theme-opt" data-theme="hybrid">
+    <div class="swatch sw-hybrid"></div>
+    <span data-i18n="theme_hybrid">Гібрыд</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="hud">
+  <div class="hud-card">
+    <div class="speed-row">
+      <div class="speed-big" id="curSpeed">0.0</div>
+      <div class="speed-unit" data-i18n="unit_kmh">км/г</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label" data-i18n="lbl_dist">Дыстанцыя</div>
+        <div class="stat-value" id="distVal">0.00 км</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="lbl_time">Час</div>
+        <div class="stat-value" id="timeVal">00:00:00</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="lbl_avg">Сярэдняя</div>
+        <div class="stat-value blue" id="avgSpeed">0.0 км/г</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="btn btn-start" id="startBtn" data-i18n="btn_start">Пачаць</button>
+      <button class="btn btn-pause" id="pauseBtn" data-i18n="btn_pause" disabled>Паўза</button>
+      <button class="btn btn-stop" id="stopBtn" data-i18n="btn_stop" disabled>Стоп</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet-overlay" id="sheetOverlay"></div>
+
+<div class="sheet" id="statsSheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-head">
+    <div class="sheet-title" data-i18n="stats_title">Статыстыка</div>
+    <button class="sheet-close" id="statsClose">✕</button>
+  </div>
+  <div class="sheet-body">
+    <div class="period-row">
+      <button class="period-chip active" data-period="week" data-i18n="period_week">Тыдзень</button>
+      <button class="period-chip" data-period="month" data-i18n="period_month">Месяц</button>
+      <button class="period-chip" data-period="year" data-i18n="period_year">Год</button>
+      <button class="period-chip" data-period="all" data-i18n="period_all">Увесь час</button>
+      <button class="period-chip" data-period="custom" data-i18n="period_custom">Свой перыяд</button>
+    </div>
+    <div class="custom-range" id="customRange">
+      <div class="date-field">
+        <label data-i18n="date_from">З</label>
+        <input type="date" id="dateFrom">
+      </div>
+      <div class="date-field">
+        <label data-i18n="date_to">Па</label>
+        <input type="date" id="dateTo">
+      </div>
+      <button class="apply-btn" id="applyRange" data-i18n="apply_btn">Ужыць</button>
+    </div>
+
+    <div class="stats-hero">
+      <div class="stats-hero-value" id="statDist">0.0</div>
+      <div class="stats-hero-unit" data-i18n="unit_km">км</div>
+    </div>
+    <div class="stats-sub" id="statPeriodLabel">—</div>
+
+    <div class="stat-grid stats-grid-3">
+      <div class="stat">
+        <div class="stat-label" data-i18n="stat_rides">Паездак</div>
+        <div class="stat-value" id="statRides">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="stat_time">У дарозе</div>
+        <div class="stat-value" id="statTime">00:00</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="stat_avg">Сярэдняя</div>
+        <div class="stat-value blue" id="statAvg">0.0 км/г</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="historySheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-head">
+    <div class="sheet-title" data-i18n="hist_title">Гісторыя паездак</div>
+    <button class="sheet-close" id="sheetClose">✕</button>
+  </div>
+  <div class="sheet-body" id="sheetBody">
+    <div class="hist-empty" id="histEmpty" data-i18n="hist_empty">Пакуль няма завершаных паездак</div>
+    <div id="histList"></div>
+  </div>
+</div>
+
+<script>
+// ---------- i18n ----------
+const I18N = {
+  be: {
+    theme_scheme: 'Схема', theme_sat: 'Спадарожнік', theme_hybrid: 'Гібрыд',
+    unit_kmh: 'км/г',
+    lbl_dist: 'Дыстанцыя', lbl_time: 'Час', lbl_avg: 'Сярэдняя',
+    btn_start: 'Пачаць', btn_pause: 'Паўза', btn_resume: 'Працягнуць', btn_stop: 'Стоп',
+    hist_title: 'Гісторыя паездак', hist_empty: 'Пакуль няма завершаных паездак',
+    gps_searching: 'пошук GPS…', gps_active: 'GPS актыўны', gps_lost: 'няма доступу да GPS',
+    toast_started: 'Паездка пачалася', toast_paused: 'На паўзе', toast_resumed: 'Працягваем',
+    toast_gps_lost: 'Сігнал GPS страчаны',
+    toast_finished: (d,t) => `Паездка: ${d} км за ${t}`,
+    hist_row: (dist, date, time, avg) => ({dist, date, time, avg}),
+    perm_title: 'Патрэбны доступ да GPS',
+    perm_text: 'Каб паказваць маршрут на карце і лічыць дыстанцыю і хуткасць, дадатку трэба ведаць вашу геапазіцыю.',
+    perm_btn: 'Дазволіць доступ',
+    perm_denied: 'Доступ адхілены. Дазвольце геалакацыю ў наладах браўзера і абновіце старонку.',
+    perm_unsupported: 'Геалакацыя не падтрымліваецца гэтым браўзерам.',
+    perm_insecure: 'Старонка адкрыта не праз https, таму браўзер блакуе GPS без паказу дыялогу. Адкрыйце дадатак па https-спасылцы (не як лакальны файл), каб убачыць запыт дазволу.',
+    perm_blocked: 'Дазвол ужо быў адхілены раней. Націсніце значок ⓘ побач з адрасам → «Дазволы» → «Месцазнаходжанне» → «Дазволіць», пасля націсніце кнопку ніжэй.',
+    perm_unavailable: 'Не ўдалося вызначыць месцазнаходжанне. Праверце, ці ўключаны GPS/геалакацыя ў тэлефоне, і паспрабуйце зноў.',
+    perm_timeout: 'Занадта доўгае чаканне сігналу GPS. Паспрабуйце зноў на адкрытай прасторы.',
+    perm_retry: 'Паспрабаваць зноў',
+    stats_title: 'Статыстыка',
+    period_week: 'Тыдзень', period_month: 'Месяц', period_year: 'Год',
+    period_all: 'Увесь час', period_custom: 'Свой перыяд',
+    date_from: 'З', date_to: 'Па', apply_btn: 'Ужыць',
+    unit_km: 'км',
+    stat_rides: 'Паездак', stat_time: 'У дарозе', stat_avg: 'Сярэдняя',
+    range_week: 'Гэты тыдзень', range_month: 'Гэты месяц', range_year: 'Гэты год',
+    range_all: 'За ўвесь час', range_custom: (a,b) => `${a} — ${b}`,
+    range_empty: 'Няма паездак за гэты перыяд'
+  },
+  ru: {
+    theme_scheme: 'Схема', theme_sat: 'Спутник', theme_hybrid: 'Гибрид',
+    unit_kmh: 'км/ч',
+    lbl_dist: 'Дистанция', lbl_time: 'Время', lbl_avg: 'Средняя',
+    btn_start: 'Начать', btn_pause: 'Пауза', btn_resume: 'Продолжить', btn_stop: 'Стоп',
+    hist_title: 'История поездок', hist_empty: 'Пока нет завершённых поездок',
+    gps_searching: 'поиск GPS…', gps_active: 'GPS активен', gps_lost: 'нет доступа к GPS',
+    toast_started: 'Поездка началась', toast_paused: 'На паузе', toast_resumed: 'Продолжаем',
+    toast_gps_lost: 'Сигнал GPS потерян',
+    toast_finished: (d,t) => `Поездка: ${d} км за ${t}`,
+    perm_title: 'Нужен доступ к GPS',
+    perm_text: 'Чтобы показывать маршрут на карте и считать дистанцию и скорость, приложению нужно знать вашу геопозицию.',
+    perm_btn: 'Разрешить доступ',
+    perm_denied: 'Доступ отклонён. Разрешите геолокацию в настройках браузера и обновите страницу.',
+    perm_unsupported: 'Геолокация не поддерживается этим браузером.',
+    perm_insecure: 'Страница открыта не через https, поэтому браузер блокирует GPS без показа диалога. Откройте приложение по https-ссылке (не как локальный файл), чтобы увидеть запрос разрешения.',
+    perm_blocked: 'Разрешение уже было отклонено ранее. Нажмите значок ⓘ рядом с адресом → «Разрешения» → «Местоположение» → «Разрешить», затем нажмите кнопку ниже.',
+    perm_unavailable: 'Не удалось определить местоположение. Проверьте, включена ли геолокация на телефоне, и попробуйте снова.',
+    perm_timeout: 'Слишком долгое ожидание сигнала GPS. Попробуйте снова на открытом пространстве.',
+    perm_retry: 'Попробовать снова',
+    stats_title: 'Статистика',
+    period_week: 'Неделя', period_month: 'Месяц', period_year: 'Год',
+    period_all: 'Всё время', period_custom: 'Свой период',
+    date_from: 'С', date_to: 'По', apply_btn: 'Применить',
+    unit_km: 'км',
+    stat_rides: 'Поездок', stat_time: 'В пути', stat_avg: 'Средняя',
+    range_week: 'Эта неделя', range_month: 'Этот месяц', range_year: 'Этот год',
+    range_all: 'За всё время', range_custom: (a,b) => `${a} — ${b}`,
+    range_empty: 'Нет поездок за этот период'
+  }
+};
+let lang = 'be';
+
+function applyI18n(){
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (I18N[lang][key] && typeof I18N[lang][key] === 'string'){
+      el.textContent = I18N[lang][key];
+    }
+  });
+  document.getElementById('langBtn').textContent = lang.toUpperCase();
+  if (!tracking){
+    document.getElementById('gpsLabel').textContent = I18N[lang].gps_searching;
+  }
+  pauseBtn.textContent = paused ? I18N[lang].btn_resume : I18N[lang].btn_pause;
+
+  const permBtn = document.getElementById('permBtn');
+  const permDenied = document.getElementById('permDenied');
+  permBtn.textContent = lastPermErrorKey ? I18N[lang].perm_retry : I18N[lang].perm_btn;
+  if (lastPermErrorKey){
+    permDenied.textContent = I18N[lang][lastPermErrorKey];
+  }
+}
+
+document.getElementById('langBtn').addEventListener('click', () => {
+  lang = (lang === 'be') ? 'ru' : 'be';
+  applyI18n();
+});
+
+// ---------- State ----------
+let map, pathLine, userMarker;
+let currentLayer = null;
+let currentOverlay = null;
+let watchId = null;
+let tracking = false;
+let paused = false;
+let positions = [];
+let totalDistance = 0;
+let movingTime = 0;
+let timerInterval = null;
+let lastTickTs = null;
+let maxSpeedSeen = 0;
+let tripHistory = [];
+let lastPermErrorKey = null;
+const STORAGE_KEY = 'velatrek_trip_history';
+
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw){
+      const arr = JSON.parse(raw);
+      return arr.map(t => ({ ...t, ts: t.ts }));
+    }
+  } catch(e){
+    // localStorage unavailable (e.g. previewed as a Claude artifact) — falls back to session-only memory
+  }
+  return [];
+}
+
+function saveHistory(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tripHistory));
+  } catch(e){
+    // storage unavailable — history will still work for this session
+  }
+}
+
+tripHistory = loadHistory();
+
+// ---------- Map layers ----------
+const LAYERS = {
+  scheme: () => L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd' }),
+  sat: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+  hybridOverlay: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 })
+};
+
+function setMapTheme(theme){
+  if (currentLayer){ map.removeLayer(currentLayer); currentLayer = null; }
+  if (currentOverlay){ map.removeLayer(currentOverlay); currentOverlay = null; }
+
+  const mapEl = document.getElementById('map');
+  mapEl.classList.remove('sat');
+
+  if (theme === 'scheme'){
+    currentLayer = LAYERS.scheme().addTo(map);
+  } else if (theme === 'sat'){
+    currentLayer = LAYERS.sat().addTo(map);
+    mapEl.classList.add('sat');
+  } else if (theme === 'hybrid'){
+    currentLayer = LAYERS.sat().addTo(map);
+    currentOverlay = LAYERS.hybridOverlay().addTo(map);
+    mapEl.classList.add('sat');
+  }
+  currentLayer.setZIndex(1);
+  if (currentOverlay) currentOverlay.setZIndex(2);
+
+  document.querySelectorAll('.theme-opt').forEach(o => {
+    o.classList.toggle('active', o.dataset.theme === theme);
+  });
+}
+
+// ---------- Map setup ----------
+function initMap(){
+  map = L.map('map', { zoomControl:false, attributionControl:true }).setView([53.9, 27.5667], 14);
+  setMapTheme('scheme');
+
+  pathLine = L.polyline([], { color: '#C6F135', weight: 5, opacity: 0.9, lineCap:'round' }).addTo(map);
+
+  const dotIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;border-radius:50%;background:#C6F135;border:3px solid #12161A;box-shadow:0 0 10px rgba(198,241,53,0.6);"></div>',
+    iconSize: [16,16],
+    iconAnchor: [8,8]
+  });
+  userMarker = L.marker([53.9, 27.5667], { icon: dotIcon }).addTo(map);
+}
+
+// ---------- Geo helpers ----------
+function haversine(lat1, lon1, lat2, lon2){
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+function fmtTime(totalSeconds){
+  const h = Math.floor(totalSeconds/3600);
+  const m = Math.floor((totalSeconds%3600)/60);
+  const s = Math.floor(totalSeconds%60);
+  return [h,m,s].map(v => String(v).padStart(2,'0')).join(':');
+}
+
+function fmtDateShort(d){
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const hh = String(d.getHours()).padStart(2,'0');
+  const min = String(d.getMinutes()).padStart(2,'0');
+  return `${dd}.${mm} · ${hh}:${min}`;
+}
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=> t.classList.remove('show'), 2200);
+}
+
+// ---------- GPS handling ----------
+function onPosition(pos){
+  const { latitude, longitude, speed, accuracy } = pos.coords;
+  const now = pos.timestamp;
+
+  document.getElementById('gpsDot').classList.add('ok');
+  document.getElementById('gpsLabel').textContent = accuracy ? `±${Math.round(accuracy)} м` : I18N[lang].gps_active;
+
+  if (!map._hasCentered){
+    map.setView([latitude, longitude], 17);
+    map._hasCentered = true;
+  }
+  userMarker.setLatLng([latitude, longitude]);
+
+  let instSpeedKmh = 0;
+  if (typeof speed === 'number' && speed !== null && speed >= 0){
+    instSpeedKmh = speed * 3.6;
+  }
+
+  if (tracking && !paused){
+    if (positions.length > 0){
+      const last = positions[positions.length - 1];
+      const d = haversine(last.lat, last.lng, latitude, longitude);
+      if (d > 1 && d < 200){
+        totalDistance += d;
+        pathLine.addLatLng([latitude, longitude]);
+      }
+      if (!speed && last.t){
+        const dt = (now - last.t) / 1000;
+        if (dt > 0 && d > 1 && d < 200){
+          instSpeedKmh = (d / dt) * 3.6;
+        }
+      }
+    }
+    positions.push({ lat: latitude, lng: longitude, t: now });
+    if (instSpeedKmh > maxSpeedSeen) maxSpeedSeen = instSpeedKmh;
+
+    document.getElementById('curSpeed').textContent = instSpeedKmh.toFixed(1);
+    document.getElementById('distVal').textContent = (totalDistance/1000).toFixed(2) + ' км';
+
+    const avgKmh = movingTime > 0 ? (totalDistance/1000) / (movingTime/3600) : 0;
+    document.getElementById('avgSpeed').textContent = avgKmh.toFixed(1) + ' ' + I18N[lang].unit_kmh;
+  } else if (!tracking){
+    document.getElementById('curSpeed').textContent = instSpeedKmh.toFixed(1);
+  }
+}
+
+function onPositionError(err){
+  document.getElementById('gpsDot').classList.remove('ok');
+  document.getElementById('gpsLabel').textContent = I18N[lang].gps_lost;
+  if (tracking){
+    showToast(I18N[lang].toast_gps_lost);
+  }
+}
+
+function startWatch(){
+  if (!navigator.geolocation){
+    showToast('Геалакацыя не падтрымліваецца');
+    return;
+  }
+  watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 15000
+  });
+}
+
+function requestGpsPermission(){
+  const overlay = document.getElementById('permOverlay');
+  const denied = document.getElementById('permDenied');
+  const btn = document.getElementById('permBtn');
+
+  lastPermErrorKey = null;
+  denied.style.display = 'none';
+  btn.textContent = I18N[lang].perm_btn;
+
+  if (!navigator.geolocation){
+    lastPermErrorKey = 'perm_unsupported';
+    denied.textContent = I18N[lang].perm_unsupported;
+    denied.style.display = 'block';
+    return;
+  }
+
+  if (window.isSecureContext === false){
+    lastPermErrorKey = 'perm_insecure';
+    denied.textContent = I18N[lang].perm_insecure;
+    denied.style.display = 'block';
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      lastPermErrorKey = null;
+      overlay.classList.add('hidden');
+      onPosition(pos);
+      startWatch();
+    },
+    (err) => {
+      if (err.code === 1){
+        lastPermErrorKey = 'perm_blocked';
+      } else if (err.code === 2){
+        lastPermErrorKey = 'perm_unavailable';
+      } else {
+        lastPermErrorKey = 'perm_timeout';
+      }
+      denied.textContent = I18N[lang][lastPermErrorKey];
+      denied.style.display = 'block';
+      btn.textContent = I18N[lang].perm_retry;
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 1000 }
+  );
+}
+
+document.getElementById('permBtn').addEventListener('click', requestGpsPermission);
+
+// ---------- Timer ----------
+function tick(){
+  const now = Date.now();
+  if (lastTickTs !== null){
+    movingTime += (now - lastTickTs) / 1000;
+  }
+  lastTickTs = now;
+  document.getElementById('timeVal').textContent = fmtTime(movingTime);
+
+  const avgKmh = movingTime > 0 ? (totalDistance/1000) / (movingTime/3600) : 0;
+  document.getElementById('avgSpeed').textContent = avgKmh.toFixed(1) + ' ' + I18N[lang].unit_kmh;
+}
+
+// ---------- Trip history ----------
+function renderHistory(){
+  const list = document.getElementById('histList');
+  const empty = document.getElementById('histEmpty');
+  list.innerHTML = '';
+  if (tripHistory.length === 0){
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  [...tripHistory].sort((a,b) => b.ts - a.ts).forEach(trip => {
+    const distKm = (trip.distanceM/1000).toFixed(2);
+    const time = fmtTime(trip.durationS);
+    const avg = trip.durationS > 0 ? ((trip.distanceM/1000) / (trip.durationS/3600)).toFixed(1) : '0.0';
+    const row = document.createElement('div');
+    row.className = 'hist-item';
+    row.innerHTML = `
+      <div>
+        <div class="hist-date">${fmtDateShort(new Date(trip.ts))}</div>
+        <div class="hist-dist">${distKm} км</div>
+      </div>
+      <div class="hist-meta">${time}<br>${avg} ${I18N[lang].unit_kmh}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+// ---------- Statistics ----------
+let currentPeriod = 'week';
+
+function startOfWeek(d){
+  const date = new Date(d);
+  date.setHours(0,0,0,0);
+  const day = (date.getDay() + 6) % 7; // Monday = 0
+  date.setDate(date.getDate() - day);
+  return date;
+}
+function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
+function startOfYear(d){ return new Date(d.getFullYear(), 0, 1); }
+
+function fmtShortDate(d){
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const yy = d.getFullYear();
+  return `${dd}.${mm}.${yy}`;
+}
+
+function getPeriodRange(period){
+  const now = new Date();
+  if (period === 'week') return { from: startOfWeek(now), to: now, label: I18N[lang].range_week };
+  if (period === 'month') return { from: startOfMonth(now), to: now, label: I18N[lang].range_month };
+  if (period === 'year') return { from: startOfYear(now), to: now, label: I18N[lang].range_year };
+  if (period === 'all') return { from: new Date(0), to: now, label: I18N[lang].range_all };
+  if (period === 'custom'){
+    const fromInput = document.getElementById('dateFrom').value;
+    const toInput = document.getElementById('dateTo').value;
+    const from = fromInput ? new Date(fromInput + 'T00:00:00') : new Date(0);
+    const to = toInput ? new Date(toInput + 'T23:59:59') : now;
+    return { from, to, label: I18N[lang].range_custom(fmtShortDate(from), fmtShortDate(to)) };
+  }
+  return { from: startOfWeek(now), to: now, label: I18N[lang].range_week };
+}
+
+function renderStats(){
+  const { from, to, label } = getPeriodRange(currentPeriod);
+  const filtered = tripHistory.filter(t => t.ts >= from.getTime() && t.ts <= to.getTime());
+
+  const totalDistM = filtered.reduce((s,t) => s + t.distanceM, 0);
+  const totalTimeS = filtered.reduce((s,t) => s + t.durationS, 0);
+  const rides = filtered.length;
+  const avgKmh = totalTimeS > 0 ? (totalDistM/1000) / (totalTimeS/3600) : 0;
+
+  document.getElementById('statDist').textContent = (totalDistM/1000).toFixed(1);
+  document.getElementById('statRides').textContent = rides;
+  document.getElementById('statTime').textContent = fmtHoursMin(totalTimeS);
+  document.getElementById('statAvg').textContent = avgKmh.toFixed(1) + ' ' + I18N[lang].unit_kmh;
+  document.getElementById('statPeriodLabel').textContent = rides > 0 ? label : I18N[lang].range_empty;
+}
+
+function fmtHoursMin(totalSeconds){
+  const h = Math.floor(totalSeconds/3600);
+  const m = Math.floor((totalSeconds%3600)/60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+document.querySelectorAll('.period-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.period-chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    currentPeriod = chip.dataset.period;
+    document.getElementById('customRange').classList.toggle('show', currentPeriod === 'custom');
+    if (currentPeriod === 'custom'){
+      const toField = document.getElementById('dateTo');
+      const fromField = document.getElementById('dateFrom');
+      if (!toField.value){
+        const now = new Date();
+        const monthAgo = new Date(now.getTime() - 30*24*3600*1000);
+        toField.value = now.toISOString().slice(0,10);
+        fromField.value = monthAgo.toISOString().slice(0,10);
+        renderStats();
+      }
+    } else {
+      renderStats();
+    }
+  });
+});
+
+document.getElementById('applyRange').addEventListener('click', renderStats);
+
+// ---------- Controls ----------
+const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+startBtn.addEventListener('click', () => {
+  if (!tracking){
+    tracking = true;
+    paused = false;
+    positions = [];
+    totalDistance = 0;
+    movingTime = 0;
+    maxSpeedSeen = 0;
+    pathLine.setLatLngs([]);
+    lastTickTs = Date.now();
+    timerInterval = setInterval(tick, 1000);
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    stopBtn.disabled = false;
+    showToast(I18N[lang].toast_started);
+  }
+});
+
+pauseBtn.addEventListener('click', () => {
+  paused = !paused;
+  if (paused){
+    pauseBtn.textContent = I18N[lang].btn_resume;
+    lastTickTs = null;
+    showToast(I18N[lang].toast_paused);
+  } else {
+    pauseBtn.textContent = I18N[lang].btn_pause;
+    lastTickTs = Date.now();
+    showToast(I18N[lang].toast_resumed);
+  }
+});
+
+stopBtn.addEventListener('click', () => {
+  tracking = false;
+  paused = false;
+  clearInterval(timerInterval);
+  lastTickTs = null;
+  pauseBtn.textContent = I18N[lang].btn_pause;
+  startBtn.disabled = false;
+  pauseBtn.disabled = true;
+  stopBtn.disabled = true;
+
+  const distKm = (totalDistance/1000).toFixed(2);
+  const time = fmtTime(movingTime);
+  const avg = movingTime > 0 ? ((totalDistance/1000) / (movingTime/3600)).toFixed(1) : '0.0';
+
+  if (totalDistance > 20){
+    tripHistory.push({ ts: Date.now(), distanceM: totalDistance, durationS: movingTime });
+    saveHistory();
+    renderHistory();
+  }
+
+  showToast(I18N[lang].toast_finished(distKm, time));
+});
+
+document.getElementById('locateBtn').addEventListener('click', () => {
+  if (positions.length){
+    const last = positions[positions.length - 1];
+    map.setView([last.lat, last.lng], 17);
+  } else if (userMarker){
+    map.setView(userMarker.getLatLng(), 17);
+  }
+  closePanels();
+});
+
+// ---------- Panels ----------
+const themePanel = document.getElementById('themePanel');
+document.getElementById('layersBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  themePanel.classList.toggle('show');
+});
+themePanel.querySelectorAll('.theme-opt').forEach(opt => {
+  opt.addEventListener('click', () => {
+    setMapTheme(opt.dataset.theme);
+    themePanel.classList.remove('show');
+  });
+});
+document.addEventListener('click', (e) => {
+  if (!themePanel.contains(e.target) && e.target.id !== 'layersBtn'){
+    themePanel.classList.remove('show');
+  }
+});
+function closePanels(){ themePanel.classList.remove('show'); }
+
+// ---------- Bottom sheets (history + stats) ----------
+const historySheet = document.getElementById('historySheet');
+const statsSheet = document.getElementById('statsSheet');
+const sheetOverlay = document.getElementById('sheetOverlay');
+let openSheetEl = null;
+
+function openSheet(sheetEl){
+  if (openSheetEl) openSheetEl.classList.remove('show');
+  openSheetEl = sheetEl;
+  sheetEl.classList.add('show');
+  sheetOverlay.classList.add('show');
+}
+function closeSheet(){
+  if (openSheetEl) openSheetEl.classList.remove('show');
+  openSheetEl = null;
+  sheetOverlay.classList.remove('show');
+}
+
+document.getElementById('historyBtn').addEventListener('click', () => {
+  renderHistory();
+  openSheet(historySheet);
+});
+document.getElementById('statsBtn').addEventListener('click', () => {
+  renderStats();
+  openSheet(statsSheet);
+});
+document.getElementById('sheetClose').addEventListener('click', closeSheet);
+document.getElementById('statsClose').addEventListener('click', closeSheet);
+sheetOverlay.addEventListener('click', closeSheet);
+
+// ---------- Init ----------
+initMap();
+applyI18n();
+// GPS is requested only after the user taps "Дазволіць доступ" on the permission screen
+</script>
+
+</body>
+</html>
